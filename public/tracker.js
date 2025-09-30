@@ -1,11 +1,12 @@
 /**
- * Nexxinfra Tag Manager - Tracker v1.7.1
- * Changes vs 1.7.0:
- * - Lead DINÂMICO: coleta TODOS os campos preenchidos (usa name || id como chave)
- * - Suporte a inputs fora do <form> com atributo [form="..."]
- * - Flush garantido no submit (finalizeFormFields)
- * - Grupos checkbox/radio serializados corretamente
- * - Opções para incluir desabilitados/hidden e incluir unchecked=false
+ * Nexxinfra Tag Manager - Tracker v1.7.2
+ * Principais recursos:
+ * - Lead DINÂMICO: envia TODOS os campos preenchidos (usa name || id || data-tracker-alias)
+ * - Suporte a inputs fora do <form> via [form="idDoForm"]
+ * - Flush de campos pendentes no submit (garante FieldFilled antes do Lead)
+ * - Serialização correta de checkbox/radio (grupos), select múltiplo e arquivos (opcional)
+ * - Snapshot do schema (FormSchema) ao iniciar, e FormDebugSummary (apenas debug) no submit
+ * - Máscara/sanitização de campos sensíveis com allowlist configurável
  */
 (function (window, document) {
   'use strict';
@@ -27,14 +28,15 @@
   var maxFieldValueLength = Number(config.maxFieldValueLength || 200);
 
   // LEAD dinâmico
-  var includeAllFieldsOnLead = config.includeAllFieldsOnLead !== false; // default: true
+  var includeAllFieldsOnLead     = config.includeAllFieldsOnLead !== false; // default: true
   var includeCheckboxRadioOnLead = config.includeCheckboxRadioOnLead !== false; // default: true
-  var includeFileNamesOnLead = !!config.includeFileNamesOnLead; // default: false
-  var includeDisabledOrHidden = !!config.includeDisabledOrHidden; // default: false
-  var includeUncheckedAsFalse = !!config.includeUncheckedAsFalse; // default: false (para checkbox/radio)
+  var includeFileNamesOnLead     = !!config.includeFileNamesOnLead; // default: false
+  var includeDisabledOrHidden    = !!config.includeDisabledOrHidden; // default: false
+  var includeUncheckedAsFalse    = !!config.includeUncheckedAsFalse; // default: false (checkbox/radio não selecionados => "false")
 
-  // Snapshot do schema (útil p/ depuração/analytics)
+  // Eventos auxiliares
   var emitFormSchemaOnStart = config.emitFormSchemaOnStart !== false; // default: true
+  var emitFormDebugSummary  = config.emitFormDebugSummary !== false;  // default: true (só em debug)
 
   // Padrões sensíveis
   var defaultSensitivePatterns = [
@@ -51,15 +53,36 @@
   // CAPABILITIES
   // ===========================
   var cookiesEnabled = false;
-  try { document.cookie = '_test=1'; cookiesEnabled = document.cookie.indexOf('_test=1') !== -1; document.cookie = '_test=1; expires=Thu, 01 Jan 1970 00:00:01 GMT'; } catch(e){ warn('Cookies bloqueados:', e.message); }
+  try {
+    document.cookie = '_test=1';
+    cookiesEnabled = document.cookie.indexOf('_test=1') !== -1;
+    document.cookie = '_test=1; expires=Thu, 01 Jan 1970 00:00:01 GMT';
+  } catch(e){ warn('Cookies bloqueados:', e.message); }
+
   var storageEnabled = false;
-  try { localStorage.setItem('_test','1'); localStorage.removeItem('_test'); storageEnabled = true; } catch(e){ warn('LocalStorage bloqueado:', e.message); }
+  try { localStorage.setItem('_test','1'); localStorage.removeItem('_test'); storageEnabled = true; }
+  catch(e){ warn('LocalStorage bloqueado:', e.message); }
 
   // ===========================
   // STORAGE HELPERS
   // ===========================
-  function getCookie(name){ if (!cookiesEnabled) return null; try{ var v='; '+document.cookie; var p=v.split('; '+name+'='); if(p.length===2) return p.pop().split(';').shift(); }catch(e){} return null; }
-  function setCookie(name,value,days){ if(!cookiesEnabled) return false; try{ var d=new Date(); d.setTime(d.getTime()+days*864e5); document.cookie=name+'='+value+';expires='+d.toUTCString()+';path=/'; return true; }catch(e){ return false; } }
+  function getCookie(name){
+    if (!cookiesEnabled) return null;
+    try {
+      var v='; '+document.cookie;
+      var p=v.split('; '+name+'=');
+      if (p.length===2) return p.pop().split(';').shift();
+    } catch(e){}
+    return null;
+  }
+  function setCookie(name,value,days){
+    if (!cookiesEnabled) return false;
+    try {
+      var d=new Date(); d.setTime(d.getTime()+days*864e5);
+      document.cookie=name+'='+value+';expires='+d.toUTCString()+';path=/';
+      return true;
+    } catch(e){ return false; }
+  }
   function getStorage(k){ if(!storageEnabled) return null; try{ return localStorage.getItem(k); }catch(e){ return null; } }
   function setStorage(k,v){ if(!storageEnabled) return false; try{ localStorage.setItem(k,v); return true; }catch(e){ return false; } }
   function getSessionStorage(k){ try{ return sessionStorage.getItem(k); }catch(e){ return null; } }
@@ -70,10 +93,20 @@
   // ===========================
   function getUrlParam(p){ try{ return new URLSearchParams(window.location.search).get(p); }catch(e){ return null; } }
   function generateId(prefix){ return prefix+'_'+Date.now()+'_'+Math.random().toString(36).substr(2,9); }
-  function isHidden(el){ var s=window.getComputedStyle?getComputedStyle(el):null; return (s && (s.display==='none' || s.visibility==='hidden')) || el.type==='hidden'; }
+  function isHidden(el){
+    var s=window.getComputedStyle?getComputedStyle(el):null;
+    return (s && (s.display==='none' || s.visibility==='hidden')) || el.type==='hidden';
+  }
   function getLabelForField(field){
-    if (field.id) { var l=document.querySelector('label[for="'+field.id+'"]'); if(l) return l.textContent.trim(); }
-    var p=field.parentElement; if(p){ var lbl=p.querySelector('label'); if(lbl) return lbl.textContent.trim(); }
+    if (field.id) {
+      var l=document.querySelector('label[for="'+field.id+'"]');
+      if (l) return l.textContent.trim();
+    }
+    var p=field.parentElement;
+    if (p){
+      var lbl=p.querySelector('label');
+      if (lbl) return lbl.textContent.trim();
+    }
     return field.placeholder || field.name || 'unknown';
   }
   function getFieldKey(el){
@@ -81,8 +114,6 @@
     if (alias) return String(alias);
     return el.name || el.id || ('field_'+(el.type || 'text'));
   }
-
-  // Inputs fora do <form> que apontam com [form="id"]
   function getAssociatedElements(form){
     var arr = Array.from(form.elements || []);
     if (form.id) {
@@ -101,9 +132,14 @@
   // ===========================
   function isInAllowlist(field){
     var n=(field.name||'').toLowerCase(), i=(field.id||'').toLowerCase();
-    return fieldValueAllowlist.some(function(k){ k=(k||'').toLowerCase(); return k && (n===k || i===k); });
+    return fieldValueAllowlist.some(function(k){
+      k=(k||'').toLowerCase(); return k && (n===k || i===k);
+    });
   }
-  function isSensitiveByName(x){ x=(x||'').toLowerCase(); return sensitiveNamePatterns.some(function(p){ return x.includes(String(p).toLowerCase()); }); }
+  function isSensitiveByName(x){
+    x=(x||'').toLowerCase();
+    return sensitiveNamePatterns.some(function(p){ return x.includes(String(p).toLowerCase()); });
+  }
   function isFieldSensitive(field){
     var t=(field.type||'').toLowerCase();
     if (t==='password') return true;
@@ -185,7 +221,11 @@
       return arr.join(', ');
     }
     var val = sanitizeValue(raw);
-    if (val==='' || val==null) return includeUncheckedAsFalse && ((el.type||'').toLowerCase()==='checkbox' || (el.type||'').toLowerCase()==='radio') ? 'false' : undefined;
+    if (val==='' || val==null) {
+      var t=(el.type||'').toLowerCase();
+      if (includeUncheckedAsFalse && (t==='checkbox' || t==='radio')) return 'false';
+      return undefined;
+    }
     return val;
   }
 
@@ -196,7 +236,11 @@
   function getSessionId(){ var s=getSessionStorage('_session_id'); if(!s){ s=generateId('sess'); setSessionStorage('_session_id',s);} return s; }
   function getFBP(){ var f=getCookie('_fbp')||getStorage('_fbp'); if(!f){ f='fb.1.'+Date.now()+'.'+Math.random().toString(36).substr(2,9); if(!setCookie('_fbp',f,90)) setStorage('_fbp',f);} return f; }
   function getFBC(){ var f=getCookie('_fbc')||getStorage('_fbc'); var fbclid=getUrlParam('fbclid'); if(fbclid && !f){ f='fb.1.'+Date.now()+'.'+fbclid; if(!setCookie('_fbc',f,90)) setStorage('_fbc',f);} return f; }
-  function captureUTMs(){ var u={utm_source:getUrlParam('utm_source'),utm_medium:getUrlParam('utm_medium'),utm_campaign:getUrlParam('utm_campaign'),utm_content:getUrlParam('utm_content'),utm_term:getUrlParam('utm_term')}; if(u.utm_source||u.utm_campaign) setSessionStorage('_utms',JSON.stringify(u)); var s=getSessionStorage('_utms'); return s?JSON.parse(s):u; }
+  function captureUTMs(){
+    var u={utm_source:getUrlParam('utm_source'),utm_medium:getUrlParam('utm_medium'),utm_campaign:getUrlParam('utm_campaign'),utm_content:getUrlParam('utm_content'),utm_term:getUrlParam('utm_term')};
+    if (u.utm_source||u.utm_campaign) setSessionStorage('_utms',JSON.stringify(u));
+    var s=getSessionStorage('_utms'); return s?JSON.parse(s):u;
+  }
 
   // ===========================
   // SEND EVENT
@@ -421,6 +465,38 @@
       formsSubmitted.add(form);
 
       var leadData = includeAllFieldsOnLead ? collectLeadData(form) : {};
+
+      // (debug) comparar vistos vs enviados
+      if (debug && emitFormDebugSummary) {
+        try {
+          var seen = [];
+          getAssociatedElements(form).forEach(function(el){
+            if (!isEligibleElement(el)) return;
+            if (!includeDisabledOrHidden && (el.disabled || isHidden(el))) return;
+            var k=getFieldKey(el); if (k) seen.push(k);
+          });
+          var sent = Object.keys(leadData || {});
+          var missing = seen.filter(function(k){ return sent.indexOf(k)===-1; });
+
+          trackEvent('FormDebugSummary', {
+            form_id: form.id || 'unknown',
+            form_action: form.action || window.location.href,
+            seen_keys: seen,
+            sent_keys: sent,
+            missing_keys: missing,
+            flags: {
+              includeAllFieldsOnLead: includeAllFieldsOnLead,
+              includeCheckboxRadioOnLead: includeCheckboxRadioOnLead,
+              includeFileNamesOnLead: includeFileNamesOnLead,
+              includeDisabledOrHidden: includeDisabledOrHidden,
+              includeUncheckedAsFalse: includeUncheckedAsFalse,
+              maskSensitiveFields: maskSensitiveFields
+            },
+            version: '1.7.2'
+          });
+        } catch(err){ warn('FormDebugSummary error:', err.message); }
+      }
+
       trackEvent('Lead', {
         form_data: leadData,
         form_id: form.id || 'unknown',
@@ -456,8 +532,23 @@
   // ===========================
   if (config.autoScrollTracking !== false) {
     var marks={'50':false,'75':false,'90':false}, timer=null;
-    function depth(){ var wh=window.innerHeight, dh=Math.max(document.body.scrollHeight,document.body.offsetHeight,document.documentElement.clientHeight,document.documentElement.scrollHeight,document.documentElement.offsetHeight), st=window.pageYOffset||document.documentElement.scrollTop, sd=dh-wh; if(sd<=0) return 0; return Math.min(Math.round((st/sd)*100),100); }
-    function onScroll(){ clearTimeout(timer); timer=setTimeout(function(){ var d=depth(); if(d>=50 && !marks['50']){marks['50']=true; trackEvent('Scroll',{depth:50,scroll_percentage:d});} if(d>=75 && !marks['75']){marks['75']=true; trackEvent('Scroll',{depth:75,scroll_percentage:d});} if(d>=90 && !marks['90']){marks['90']=true; trackEvent('Scroll',{depth:90,scroll_percentage:d});} },150); }
+    function depth(){
+      var wh=window.innerHeight;
+      var dh=Math.max(document.body.scrollHeight,document.body.offsetHeight,document.documentElement.clientHeight,document.documentElement.scrollHeight,document.documentElement.offsetHeight);
+      var st=window.pageYOffset||document.documentElement.scrollTop;
+      var sd=dh-wh;
+      if (sd<=0) return 0;
+      return Math.min(Math.round((st/sd)*100),100);
+    }
+    function onScroll(){
+      clearTimeout(timer);
+      timer=setTimeout(function(){
+        var d=depth();
+        if(d>=50 && !marks['50']){marks['50']=true; trackEvent('Scroll',{depth:50,scroll_percentage:d});}
+        if(d>=75 && !marks['75']){marks['75']=true; trackEvent('Scroll',{depth:75,scroll_percentage:d});}
+        if(d>=90 && !marks['90']){marks['90']=true; trackEvent('Scroll',{depth:90,scroll_percentage:d});}
+      },150);
+    }
     window.addEventListener('scroll', onScroll, {passive:true});
   }
 
@@ -468,11 +559,11 @@
     track: trackEvent,
     getVisitorId: getVisitorId,
     getSessionId: getSessionId,
-    version: '1.7.1',
+    version: '1.7.2',
     config: { cookiesEnabled: cookiesEnabled, storageEnabled: storageEnabled }
   };
 
-  log('Tracker inicializado v1.7.1');
+  log('Tracker inicializado v1.7.2');
   log('Company:', config.companyId);
   log('Webhook:', config.webhookUrl);
 
