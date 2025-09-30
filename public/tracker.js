@@ -1,9 +1,9 @@
 /**
- * Nexxinfra Tag Manager - Tracker v1.3.0
+ * Nexxinfra Tag Manager - Tracker v1.4.0
  * Features:
- * - Cookie/LocalStorage fallback para ambientes restritos
+ * - Cookie/LocalStorage fallback
  * - Auto PageView tracking
- * - Auto Form tracking
+ * - Auto Form tracking (Submit, Started, Abandoned)
  * - Scroll depth tracking (50%, 75%, 90%)
  * - UTM parameters capture
  * - Facebook Pixel IDs (fbp, fbc)
@@ -324,16 +324,74 @@
   }
 
   // ============================================
-  // FORMULÁRIOS AUTOMÁTICOS
+  // FORM INTERACTION TRACKING
   // ============================================
 
   if (config.autoFormTracking !== false) {
+    var formsStarted = new WeakMap();
+    var formFields = new WeakMap();
+    var formsSubmitted = new WeakSet();
+
+    // Detectar quando usuário começa a preencher
+    document.addEventListener('focus', function(e) {
+      var target = e.target;
+      
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') {
+        var form = target.closest('form');
+        
+        if (form && !form.getAttribute('data-tracker-ignore')) {
+          if (!formsStarted.get(form)) {
+            formsStarted.set(form, true);
+            
+            trackEvent('FormStarted', {
+              form_id: form.id || 'unknown',
+              form_action: form.action || window.location.href,
+              first_field: target.name || target.id || 'unknown'
+            });
+            
+            log('Formulário iniciado:', form.id || 'unknown');
+            
+            formFields.set(form, {});
+          }
+        }
+      }
+    }, true);
+
+    // Rastrear campos preenchidos
+    document.addEventListener('blur', function(e) {
+      var target = e.target;
+      
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') {
+        var form = target.closest('form');
+        
+        if (form && !form.getAttribute('data-tracker-ignore')) {
+          var fields = formFields.get(form);
+          
+          if (fields && target.value && target.value.trim() !== '') {
+            var fieldName = target.name || target.id || 'field_' + target.type;
+            
+            fields[fieldName] = {
+              type: target.type,
+              filled: true,
+              timestamp: new Date().toISOString()
+            };
+            
+            formFields.set(form, fields);
+            
+            log('Campo preenchido:', fieldName);
+          }
+        }
+      }
+    }, true);
+
+    // Rastrear submit (Lead)
     document.addEventListener('submit', function(e) {
       var form = e.target;
       
-      if (form.getAttribute('data-tracker-ignore')) {
-        return;
-      }
+      if (form.getAttribute('data-tracker-ignore')) return;
+
+      // Marcar como submetido
+      formsSubmitted.add(form);
 
       var formData = new FormData(form);
       var leadData = {};
@@ -351,6 +409,39 @@
         form_action: form.action || window.location.href
       });
     }, true);
+
+    // Detectar abandono ao sair da página
+    window.addEventListener('beforeunload', function() {
+      document.querySelectorAll('form').forEach(function(form) {
+        if (form.getAttribute('data-tracker-ignore')) return;
+        
+        // Ignorar se foi submetido
+        if (formsSubmitted.has(form)) return;
+        
+        var fields = formFields.get(form);
+        
+        if (fields && Object.keys(fields).length > 0) {
+          var filledFields = Object.keys(fields);
+          var fieldCount = filledFields.length;
+          
+          var totalFields = form.querySelectorAll('input:not([type="hidden"]):not([type="submit"]), textarea, select').length;
+          var completionRate = totalFields > 0 ? Math.round((fieldCount / totalFields) * 100) : 0;
+          
+          trackEvent('FormAbandoned', {
+            form_id: form.id || 'unknown',
+            form_action: form.action || window.location.href,
+            filled_fields: filledFields,
+            field_count: fieldCount,
+            total_fields: totalFields,
+            completion_rate: completionRate
+          });
+          
+          log('Formulário abandonado:', form.id || 'unknown', 'Preenchimento:', completionRate + '%');
+        }
+      });
+    });
+
+    log('Form tracking ativado (Submit, Started, Abandoned)');
   }
 
   // ============================================
@@ -434,14 +525,14 @@
     track: trackEvent,
     getVisitorId: getVisitorId,
     getSessionId: getSessionId,
-    version: '1.3.0',
+    version: '1.4.0',
     config: {
       cookiesEnabled: cookiesEnabled,
       storageEnabled: storageEnabled
     }
   };
 
-  log('Tracker inicializado v1.3.0');
+  log('Tracker inicializado v1.4.0');
   log('Company:', config.companyId);
   log('Webhook:', config.webhookUrl);
 
