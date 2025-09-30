@@ -1,12 +1,16 @@
 /**
- * Nexxinfra Tag Manager - Tracker v1.7.5
+ * Nexxinfra Tag Manager - Tracker v1.8.0
  *
- * Novidades vs 1.7.4:
- * - Robustez do FormStarted: além de 'focus', garante start também no início de 'input', 'change' e 'blur'
- *   (cobre autofill, selects/mobile e libs que manipulam foco).
- * - Mantém: FieldFilled por fallback em BLUR, flush adicional em visibilitychange,
- *   Lead dinâmico, flush no submit, suporte [form="..."], alias, máscara/sanitização,
- *   FormSchema, FormDebugSummary (debug) e includeTrackedValuesOnLead (preenche ausentes com o que foi rastreado).
+ * Novidades vs 1.7.5:
+ * - Modularização da emissão de FieldFilled: função única emitFieldFilled(form, el, reason).
+ * - Garantia: TODO FieldFilled inclui field_value.
+ * - Novos configs:
+ *    - forceFieldValueOnFieldFilled (default: true)
+ *    - fieldFilledMaskSensitive (default: segue maskSensitiveFields)
+ *    - fieldFilledMaskReplacement (default: "[masked]")
+ * - Mantém: FormStarted robusto (focus + input/change/blur), BLUR fallback,
+ *   flush em visibilitychange, Lead dinâmico com preenchimento a partir do rastreado,
+ *   FormSchema e FormDebugSummary.
  */
 (function (window, document) {
   'use strict';
@@ -34,12 +38,18 @@
   var includeDisabledOrHidden    = !!config.includeDisabledOrHidden; // default: false
   var includeUncheckedAsFalse    = !!config.includeUncheckedAsFalse; // default: false
 
-  // Preencher campos ausentes no Lead com último valor rastreado
+  // Preencher ausentes no Lead com último valor rastreado
   var includeTrackedValuesOnLead = config.includeTrackedValuesOnLead !== false; // default: true
 
   // Eventos auxiliares
   var emitFormSchemaOnStart = config.emitFormSchemaOnStart !== false; // default: true
   var emitFormDebugSummary  = config.emitFormDebugSummary !== false;  // default: true (só em debug)
+
+  // FieldFilled: garantia de valor
+  var forceFieldValueOnFieldFilled = config.forceFieldValueOnFieldFilled !== false; // default: true
+  var fieldFilledMaskSensitive = (typeof config.fieldFilledMaskSensitive === 'boolean')
+    ? config.fieldFilledMaskSensitive : maskSensitiveFields; // por padrão segue maskSensitiveFields
+  var fieldFilledMaskReplacement = config.fieldFilledMaskReplacement || '[masked]';
 
   // Padrões sensíveis
   var defaultSensitivePatterns = [
@@ -113,6 +123,8 @@
     if (field.hasAttribute('data-tracker-mask')) return true;
     return isSensitiveByName(field.name) || isSensitiveByName(field.id);
   }
+
+  // coleta genérica (Lead e outros)
   function shouldCollectValue(field){
     if (!collectFieldValues) return false;
     if (field.getAttribute('data-tracker-no-value')==='true') return false;
@@ -134,6 +146,7 @@
     if (maskSensitiveFields && isFieldSensitive(field) && !isInAllowlist(field)) return false;
     return true;
   }
+
   function sanitizeValue(v){
     try{
       var s = Array.isArray(v) ? v.join(', ') : String(v||'');
@@ -142,6 +155,7 @@
       return s;
     }catch(e){ return ''; }
   }
+
   function getFieldPrimitiveValue(el){
     var tag=(el.tagName||'').toLowerCase();
     var t=(el.type||'').toLowerCase();
@@ -179,25 +193,28 @@
 
     return el.value || '';
   }
-  function getSafeFieldValue(el){
-    if (!shouldCollectValue(el)) return undefined;
+
+  // valor "sempre" para FieldFilled
+  function getFieldValueForFieldFilled(el){
     var raw = getFieldPrimitiveValue(el);
+    var out;
     if (Array.isArray(raw)) {
-      var arr = raw.map(function(v){ return sanitizeValue(v); }).filter(Boolean);
-      if (!arr.length) return includeUncheckedAsFalse ? 'false' : undefined;
-      return arr.join(', ');
+      out = raw.map(function(v){ return sanitizeValue(v); }).filter(Boolean).join(', ');
+      if (!out && includeUncheckedAsFalse && ((el.type||'').toLowerCase()==='checkbox' || (el.type||'').toLowerCase()==='radio')) out = 'false';
+    } else {
+      out = sanitizeValue(raw);
+      if (!out && includeUncheckedAsFalse && ((el.type||'').toLowerCase()==='checkbox' || (el.type||'').toLowerCase()==='radio')) out = 'false';
     }
-    var val = sanitizeValue(raw);
-    if (val==='' || val==null) {
-      var t=(el.type||'').toLowerCase();
-      if (includeUncheckedAsFalse && (t==='checkbox' || t==='radio')) return 'false';
-      return undefined;
+
+    // máscara opcional específica do FieldFilled
+    if (fieldFilledMaskSensitive && isFieldSensitive(el) && !isInAllowlist(el)) {
+      return fieldFilledMaskReplacement;
     }
-    return val;
+    return out;
   }
 
   // ===========================
-  // IDs
+  // IDs & UTM
   // ===========================
   function getVisitorId(){ var v=getCookie('_visitor_id')||getStorage('_visitor_id'); if(v) return v; v=generateId('vis'); if(!setCookie('_visitor_id',v,365)) setStorage('_visitor_id',v); return v; }
   function getSessionId(){ var s=getSessionStorage('_session_id'); if(!s){ s=generateId('sess'); setSessionStorage('_session_id',s);} return s; }
@@ -324,6 +341,47 @@
       });
     }
 
+    // ---------- EMISSOR ÚNICO DE FIELDFILLED ----------
+    function emitFieldFilled(form, el, reason){
+      if (!(form && !form.getAttribute('data-tracker-ignore'))) return;
+
+      var fields=formFields.get(form)||{};
+      var key=getFieldKey(el);
+
+      // finalize debounce para este elemento
+      var tmr=fieldTimers.get(el); if(tmr){ clearTimeout(tmr); fieldTimers.delete(el); }
+
+      // calcular "tem valor"
+      var raw=getFieldPrimitiveValue(el);
+      var hasVal = Array.isArray(raw) ? raw.length>0 : !!String(raw).trim();
+      if (!hasVal && includeUncheckedAsFalse && ((el.type||'').toLowerCase()==='checkbox' || (el.type||'').toLowerCase()==='radio')) {
+        hasVal = true;
+      }
+
+      // valor para FieldFilled (sempre presente, com máscara opcional)
+      var valueForEvent = forceFieldValueOnFieldFilled ? getFieldValueForFieldFilled(el) : undefined;
+
+      // registrar último valor (para Lead)
+      if (typeof valueForEvent !== 'undefined') rememberFieldValue(form, key, valueForEvent);
+
+      if (hasVal && !(fields[key] && fields[key].emitted)) {
+        fields[key]=fields[key]||{type:el.type, filled:true, tracked:true};
+        fields[key].timestamp = new Date().toISOString();
+        var payload={
+          form_id: form.id || 'unknown',
+          field_name: key,
+          field_type: el.type,
+          field_label: getLabelForField(el),
+          field_reason: reason || 'unknown'
+        };
+        if (typeof valueForEvent !== 'undefined') payload.field_value = valueForEvent;
+        trackEvent('FieldFilled', payload);
+        fields[key].emitted = true;
+        formFields.set(form, fields);
+      }
+    }
+    // -----------------------------------------------
+
     // Start (via focus)
     document.addEventListener('focus', function(e){
       var target=e.target; if(!isEligibleElement(target)) return;
@@ -331,7 +389,7 @@
       ensureFormStarted(form, target);
     }, true);
 
-    // input (text-like)
+    // input (text-like) com debounce
     document.addEventListener('input', function(e){
       var target=e.target; if(!isEligibleElement(target)) return;
       var tag=(target.tagName||'').toLowerCase();
@@ -340,32 +398,14 @@
       var form=target.closest('form') || (target.form || null);
       if (!(form && !form.getAttribute('data-tracker-ignore'))) return;
 
-      // robustez: garante FormStarted mesmo se focus não disparou
+      // robustez: garante FormStarted
       ensureFormStarted(form, target);
 
       if (t==='checkbox'||t==='radio'||t==='file'||tag==='select') return; // estes vão no 'change'
 
-      var fields=formFields.get(form)||{};
-      var key=getFieldKey(target);
-
       var prev=fieldTimers.get(target); if(prev) clearTimeout(prev);
       var timer=setTimeout(function(){
-        var hasText=!!(String(target.value||'').trim());
-        if (hasText && !fields[key]) {
-          fields[key]={type:target.type, filled:true, tracked:true, timestamp:new Date().toISOString()};
-          formFields.set(form, fields);
-        }
-        var val=getSafeFieldValue(target);
-        rememberFieldValue(form, key, val);
-
-        if (hasText && !(fields[key] && fields[key].emitted)) {
-          var payload={ form_id:form.id||'unknown', field_name:key, field_type:target.type, field_label:getLabelForField(target) };
-          if (typeof val!=='undefined') payload.field_value=val;
-          trackEvent('FieldFilled', payload);
-          fields[key] = fields[key] || {};
-          fields[key].emitted = true;
-          formFields.set(form, fields);
-        }
+        emitFieldFilled(form, target, 'debounce');
       }, 600);
       fieldTimers.set(target, timer);
     }, true);
@@ -376,99 +416,47 @@
       var form=target.closest('form') || (target.form || null);
       if (!(form && !form.getAttribute('data-tracker-ignore'))) return;
 
-      // robustez: garante FormStarted
       ensureFormStarted(form, target);
-
-      var fields=formFields.get(form)||{};
-      var key=getFieldKey(target);
-
-      var tmr=fieldTimers.get(target); if(tmr){ clearTimeout(tmr); fieldTimers.delete(target); }
-
-      var raw=getFieldPrimitiveValue(target);
-      var hasVal = Array.isArray(raw) ? raw.length>0 : !!String(raw).trim();
-      if (!hasVal && includeUncheckedAsFalse && ((target.type||'').toLowerCase()==='checkbox' || (target.type||'').toLowerCase()==='radio')) {
-        hasVal = true;
-      }
-
-      var val=getSafeFieldValue(target);
-      rememberFieldValue(form, key, val);
-
-      if (hasVal && !(fields[key] && fields[key].emitted)) {
-        fields[key]=fields[key]||{type:target.type, filled:true, tracked:true};
-        fields[key].timestamp = new Date().toISOString();
-        var payload={ form_id:form.id||'unknown', field_name:key, field_type:target.type, field_label:getLabelForField(target) };
-        if (typeof val!=='undefined') payload.field_value=val;
-        trackEvent('FieldFilled', payload);
-        fields[key].emitted = true;
-        formFields.set(form, fields);
-      }
+      emitFieldFilled(form, target, 'change');
     }, true);
 
-    // BLUR — fallback garante FieldFilled se usuário sair do campo antes do debounce
+    // BLUR — fallback
     document.addEventListener('blur', function(e){
       var target=e.target; if(!isEligibleElement(target)) return;
       var form=target.closest('form') || (target.form || null);
       if (!(form && !form.getAttribute('data-tracker-ignore'))) return;
 
-      // robustez: garante FormStarted
       ensureFormStarted(form, target);
-
-      var fields=formFields.get(form)||{};
-      var key=getFieldKey(target);
-
-      var tmr=fieldTimers.get(target); if(tmr){ clearTimeout(tmr); fieldTimers.delete(target); }
-
-      var raw=getFieldPrimitiveValue(target);
-      var hasVal = Array.isArray(raw) ? raw.length>0 : !!String(raw).trim();
-      if (!hasVal && includeUncheckedAsFalse && ((target.type||'').toLowerCase()==='checkbox' || (target.type||'').toLowerCase()==='radio')) {
-        hasVal = true;
-      }
-
-      var val=getSafeFieldValue(target);
-      rememberFieldValue(form, key, val);
-
-      if (hasVal && !(fields[key] && fields[key].emitted)) {
-        fields[key]=fields[key]||{type:target.type, filled:true, tracked:true};
-        fields[key].timestamp = new Date().toISOString();
-
-        var payload={ form_id:form.id||'unknown', field_name:key, field_type:target.type, field_label:getLabelForField(target) };
-        if (typeof val!=='undefined') payload.field_value=val;
-        trackEvent('FieldFilled', payload);
-
-        fields[key].emitted = true;
-        formFields.set(form, fields);
-      }
+      emitFieldFilled(form, target, 'blur');
     }, true);
 
     // Flush pendentes e garantir FieldFilled antes do Lead
     function finalizeFormFields(form){
-      var fields=formFields.get(form)||{};
       getAssociatedElements(form).forEach(function(el){
         if (!isEligibleElement(el)) return;
-
-        var t=fieldTimers.get(el); if(t){ clearTimeout(t); fieldTimers.delete(el); }
-
-        var key=getFieldKey(el);
-        var raw=getFieldPrimitiveValue(el);
-        var hasVal=Array.isArray(raw) ? raw.length>0 : !!String(raw).trim();
-        if (!hasVal && includeUncheckedAsFalse && ((el.type||'').toLowerCase()==='checkbox' || (el.type||'').toLowerCase()==='radio')) { hasVal = true; }
-
-        var val=getSafeFieldValue(el);
-        rememberFieldValue(form, key, val);
-
-        if (hasVal && !(fields[key] && fields[key].emitted)) {
-          fields[key]=fields[key]||{type:el.type, filled:true, tracked:true};
-          fields[key].timestamp = new Date().toISOString();
-          var payload={ form_id:form.id||'unknown', field_name:key, field_type:el.type, field_label:getLabelForField(el) };
-          if (typeof val!=='undefined') payload.field_value=val;
-          trackEvent('FieldFilled', payload);
-          fields[key].emitted = true;
-        }
+        emitFieldFilled(form, el, 'finalize');
       });
-      formFields.set(form, fields);
     }
 
     // Coleta do Lead (TODOS os campos)
+    function getSafeFieldValue(el){
+      // versão genérica (respeita configs de coleta/mascara) — usada para Lead
+      if (!shouldCollectValue(el)) return undefined;
+      var raw = getFieldPrimitiveValue(el);
+      if (Array.isArray(raw)) {
+        var arr = raw.map(function(v){ return sanitizeValue(v); }).filter(Boolean);
+        if (!arr.length) return includeUncheckedAsFalse ? 'false' : undefined;
+        return arr.join(', ');
+      }
+      var val = sanitizeValue(raw);
+      if (val==='' || val==null) {
+        var t=(el.type||'').toLowerCase();
+        if (includeUncheckedAsFalse && (t==='checkbox' || t==='radio')) return 'false';
+        return undefined;
+      }
+      return val;
+    }
+
     function collectLeadData(form){
       var out = {};
       getAssociatedElements(form).forEach(function(el){
@@ -504,7 +492,7 @@
       var form=e.target;
       if (form.getAttribute('data-tracker-ignore')) return;
 
-      // garante start mesmo se nunca houve foco em nenhum campo
+      // garante start mesmo se nunca houve foco
       ensureFormStarted(form, form);
 
       finalizeFormFields(form); // garante FieldFilled de tudo
@@ -540,9 +528,11 @@
               includeDisabledOrHidden: includeDisabledOrHidden,
               includeUncheckedAsFalse: includeUncheckedAsFalse,
               maskSensitiveFields: maskSensitiveFields,
-              includeTrackedValuesOnLead: includeTrackedValuesOnLead
+              includeTrackedValuesOnLead: includeTrackedValuesOnLead,
+              forceFieldValueOnFieldFilled: forceFieldValueOnFieldFilled,
+              fieldFilledMaskSensitive: fieldFilledMaskSensitive
             },
-            version: '1.7.5'
+            version: '1.8.0'
           });
         } catch(err){ warn('FormDebugSummary error:', err.message); }
       }
@@ -559,9 +549,12 @@
       document.querySelectorAll('form').forEach(function(form){
         if (form.getAttribute('data-tracker-ignore')) return;
         if (formsSubmitted.has(form)) return;
-        var fields=formFields.get(form);
-        if (fields && Object.keys(fields).length>0) {
-          var filledFields=Object.keys(fields);
+        var fieldsMap=formFields.get(form);
+        if (fieldsMap && Object.keys(fieldsMap).length>0) {
+          // flush final de todos (garante FieldFilled com valor)
+          finalizeFormFields(form);
+
+          var filledFields=Object.keys(fieldsMap);
           var total=form.querySelectorAll('input:not([type="hidden"]):not([type="submit"]), textarea, select').length;
           var completion= total>0 ? Math.round((filledFields.length/total)*100) : 0;
           trackEvent('FormAbandoned', {
@@ -576,7 +569,7 @@
       });
     });
 
-    // flush ao ocultar a aba (evita perder FieldFilled ao trocar de tab logo após digitar)
+    // flush ao ocultar a aba
     document.addEventListener('visibilitychange', function(){
       if (document.hidden) {
         document.querySelectorAll('form').forEach(function(form){
@@ -618,11 +611,11 @@
     track: trackEvent,
     getVisitorId: getVisitorId,
     getSessionId: getSessionId,
-    version: '1.7.5',
+    version: '1.8.0',
     config: { cookiesEnabled: cookiesEnabled, storageEnabled: storageEnabled }
   };
 
-  log('Tracker inicializado v1.7.5');
+  log('Tracker inicializado v1.8.0');
   log('Company:', config.companyId);
   log('Webhook:', config.webhookUrl);
 
