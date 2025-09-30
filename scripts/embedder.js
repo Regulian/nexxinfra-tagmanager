@@ -1,6 +1,6 @@
 <script>
   window.TrackerConfig = {
-    webhookUrl: 'https://primary-production-c3b48.up.railway.app/webhook-test/api/events',
+    webhookUrl: 'https://primary-production-c3b48.up.railway.app/webhook/api/events',
     companyId: 'uuid-empresa-teste'
   };
 </script>
