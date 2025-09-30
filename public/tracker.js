@@ -1,12 +1,8 @@
 /**
- * Nexxinfra Tag Manager - Tracker v1.7.2
- * Principais recursos:
- * - Lead DINÂMICO: envia TODOS os campos preenchidos (usa name || id || data-tracker-alias)
- * - Suporte a inputs fora do <form> via [form="idDoForm"]
- * - Flush de campos pendentes no submit (garante FieldFilled antes do Lead)
- * - Serialização correta de checkbox/radio (grupos), select múltiplo e arquivos (opcional)
- * - Snapshot do schema (FormSchema) ao iniciar, e FormDebugSummary (apenas debug) no submit
- * - Máscara/sanitização de campos sensíveis com allowlist configurável
+ * Nexxinfra Tag Manager - Tracker v1.7.3
+ * Novidades (1.7.3):
+ * - includeTrackedValuesOnLead: usa o último valor rastreado (FieldFilled/blur/flush) para preencher campos ausentes no DOM no submit
+ * - Mantém: Lead dinâmico, flush no submit, suporte [form="..."], alias, máscara/sanitização, FormSchema, FormDebugSummary (debug)
  */
 (function (window, document) {
   'use strict';
@@ -32,7 +28,10 @@
   var includeCheckboxRadioOnLead = config.includeCheckboxRadioOnLead !== false; // default: true
   var includeFileNamesOnLead     = !!config.includeFileNamesOnLead; // default: false
   var includeDisabledOrHidden    = !!config.includeDisabledOrHidden; // default: false
-  var includeUncheckedAsFalse    = !!config.includeUncheckedAsFalse; // default: false (checkbox/radio não selecionados => "false")
+  var includeUncheckedAsFalse    = !!config.includeUncheckedAsFalse; // default: false
+
+  // NOVO: preencher campos ausentes com último valor rastreado
+  var includeTrackedValuesOnLead = config.includeTrackedValuesOnLead !== false; // default: true
 
   // Eventos auxiliares
   var emitFormSchemaOnStart = config.emitFormSchemaOnStart !== false; // default: true
@@ -53,36 +52,15 @@
   // CAPABILITIES
   // ===========================
   var cookiesEnabled = false;
-  try {
-    document.cookie = '_test=1';
-    cookiesEnabled = document.cookie.indexOf('_test=1') !== -1;
-    document.cookie = '_test=1; expires=Thu, 01 Jan 1970 00:00:01 GMT';
-  } catch(e){ warn('Cookies bloqueados:', e.message); }
-
+  try { document.cookie = '_test=1'; cookiesEnabled = document.cookie.indexOf('_test=1') !== -1; document.cookie = '_test=1; expires=Thu, 01 Jan 1970 00:00:01 GMT'; } catch(e){ warn('Cookies bloqueados:', e.message); }
   var storageEnabled = false;
-  try { localStorage.setItem('_test','1'); localStorage.removeItem('_test'); storageEnabled = true; }
-  catch(e){ warn('LocalStorage bloqueado:', e.message); }
+  try { localStorage.setItem('_test','1'); localStorage.removeItem('_test'); storageEnabled = true; } catch(e){ warn('LocalStorage bloqueado:', e.message); }
 
   // ===========================
   // STORAGE HELPERS
   // ===========================
-  function getCookie(name){
-    if (!cookiesEnabled) return null;
-    try {
-      var v='; '+document.cookie;
-      var p=v.split('; '+name+'=');
-      if (p.length===2) return p.pop().split(';').shift();
-    } catch(e){}
-    return null;
-  }
-  function setCookie(name,value,days){
-    if (!cookiesEnabled) return false;
-    try {
-      var d=new Date(); d.setTime(d.getTime()+days*864e5);
-      document.cookie=name+'='+value+';expires='+d.toUTCString()+';path=/';
-      return true;
-    } catch(e){ return false; }
-  }
+  function getCookie(name){ if (!cookiesEnabled) return null; try{ var v='; '+document.cookie; var p=v.split('; '+name+'='); if(p.length===2) return p.pop().split(';').shift(); }catch(e){} return null; }
+  function setCookie(name,value,days){ if(!cookiesEnabled) return false; try{ var d=new Date(); d.setTime(d.getTime()+days*864e5); document.cookie=name+'='+value+';expires='+d.toUTCString()+';path=/'; return true; }catch(e){ return false; } }
   function getStorage(k){ if(!storageEnabled) return null; try{ return localStorage.getItem(k); }catch(e){ return null; } }
   function setStorage(k,v){ if(!storageEnabled) return false; try{ localStorage.setItem(k,v); return true; }catch(e){ return false; } }
   function getSessionStorage(k){ try{ return sessionStorage.getItem(k); }catch(e){ return null; } }
@@ -93,20 +71,10 @@
   // ===========================
   function getUrlParam(p){ try{ return new URLSearchParams(window.location.search).get(p); }catch(e){ return null; } }
   function generateId(prefix){ return prefix+'_'+Date.now()+'_'+Math.random().toString(36).substr(2,9); }
-  function isHidden(el){
-    var s=window.getComputedStyle?getComputedStyle(el):null;
-    return (s && (s.display==='none' || s.visibility==='hidden')) || el.type==='hidden';
-  }
+  function isHidden(el){ var s=window.getComputedStyle?getComputedStyle(el):null; return (s && (s.display==='none' || s.visibility==='hidden')) || el.type==='hidden'; }
   function getLabelForField(field){
-    if (field.id) {
-      var l=document.querySelector('label[for="'+field.id+'"]');
-      if (l) return l.textContent.trim();
-    }
-    var p=field.parentElement;
-    if (p){
-      var lbl=p.querySelector('label');
-      if (lbl) return lbl.textContent.trim();
-    }
+    if (field.id) { var l=document.querySelector('label[for="'+field.id+'"]'); if(l) return l.textContent.trim(); }
+    var p=field.parentElement; if (p){ var lbl=p.querySelector('label'); if (lbl) return lbl.textContent.trim(); }
     return field.placeholder || field.name || 'unknown';
   }
   function getFieldKey(el){
@@ -132,14 +100,9 @@
   // ===========================
   function isInAllowlist(field){
     var n=(field.name||'').toLowerCase(), i=(field.id||'').toLowerCase();
-    return fieldValueAllowlist.some(function(k){
-      k=(k||'').toLowerCase(); return k && (n===k || i===k);
-    });
+    return fieldValueAllowlist.some(function(k){ k=(k||'').toLowerCase(); return k && (n===k || i===k); });
   }
-  function isSensitiveByName(x){
-    x=(x||'').toLowerCase();
-    return sensitiveNamePatterns.some(function(p){ return x.includes(String(p).toLowerCase()); });
-  }
+  function isSensitiveByName(x){ x=(x||'').toLowerCase(); return sensitiveNamePatterns.some(function(p){ return x.includes(String(p).toLowerCase()); }); }
   function isFieldSensitive(field){
     var t=(field.type||'').toLowerCase();
     if (t==='password') return true;
@@ -236,11 +199,7 @@
   function getSessionId(){ var s=getSessionStorage('_session_id'); if(!s){ s=generateId('sess'); setSessionStorage('_session_id',s);} return s; }
   function getFBP(){ var f=getCookie('_fbp')||getStorage('_fbp'); if(!f){ f='fb.1.'+Date.now()+'.'+Math.random().toString(36).substr(2,9); if(!setCookie('_fbp',f,90)) setStorage('_fbp',f);} return f; }
   function getFBC(){ var f=getCookie('_fbc')||getStorage('_fbc'); var fbclid=getUrlParam('fbclid'); if(fbclid && !f){ f='fb.1.'+Date.now()+'.'+fbclid; if(!setCookie('_fbc',f,90)) setStorage('_fbc',f);} return f; }
-  function captureUTMs(){
-    var u={utm_source:getUrlParam('utm_source'),utm_medium:getUrlParam('utm_medium'),utm_campaign:getUrlParam('utm_campaign'),utm_content:getUrlParam('utm_content'),utm_term:getUrlParam('utm_term')};
-    if (u.utm_source||u.utm_campaign) setSessionStorage('_utms',JSON.stringify(u));
-    var s=getSessionStorage('_utms'); return s?JSON.parse(s):u;
-  }
+  function captureUTMs(){ var u={utm_source:getUrlParam('utm_source'),utm_medium:getUrlParam('utm_medium'),utm_campaign:getUrlParam('utm_campaign'),utm_content:getUrlParam('utm_content'),utm_term:getUrlParam('utm_term')}; if(u.utm_source||u.utm_campaign) setSessionStorage('_utms',JSON.stringify(u)); var s=getSessionStorage('_utms'); return s?JSON.parse(s):u; }
 
   // ===========================
   // SEND EVENT
@@ -295,7 +254,7 @@
   // ===========================
   if (config.autoFormTracking !== false) {
     var formsStarted = new WeakMap();
-    var formFields  = new WeakMap();  // por form: { key -> meta }
+    var formFields  = new WeakMap();  // por form: { key -> {type, filled, tracked, last_value?, timestamp} }
     var formsSubmitted = new WeakSet();
     var fieldTimers = new WeakMap();  // debounce por elemento
 
@@ -313,6 +272,15 @@
         return true;
       }
       return false;
+    }
+    function rememberFieldValue(form, key, val){
+      if (typeof val === 'undefined') return;
+      var map = formFields.get(form) || {};
+      var meta = map[key] || { type: null, filled: true, tracked: true, timestamp: new Date().toISOString() };
+      meta.last_value = val;
+      meta.timestamp = new Date().toISOString();
+      map[key] = meta;
+      formFields.set(form, map);
     }
 
     function emitFormSchema(form){
@@ -373,11 +341,16 @@
         if (hasText && !fields[key]) {
           fields[key]={type:target.type, filled:true, tracked:true, timestamp:new Date().toISOString()};
           formFields.set(form, fields);
+        }
+        var val=getSafeFieldValue(target);
+        rememberFieldValue(form, key, val);
 
-          var val=getSafeFieldValue(target);
+        if (hasText && (fields[key] && !fields[key].emitted)) {
           var payload={ form_id:form.id||'unknown', field_name:key, field_type:target.type, field_label:getLabelForField(target) };
           if (typeof val!=='undefined') payload.field_value=val;
           trackEvent('FieldFilled', payload);
+          fields[key].emitted = true;
+          formFields.set(form, fields);
         }
       }, 800);
       fieldTimers.set(target, timer);
@@ -397,17 +370,21 @@
       var raw=getFieldPrimitiveValue(target);
       var hasVal = Array.isArray(raw) ? raw.length>0 : !!String(raw).trim();
       if (!hasVal && includeUncheckedAsFalse && ((target.type||'').toLowerCase()==='checkbox' || (target.type||'').toLowerCase()==='radio')) {
-        hasVal = true; // vamos registrar como false
+        hasVal = true;
       }
+
+      var val=getSafeFieldValue(target);
+      rememberFieldValue(form, key, val);
 
       if (hasVal && !fields[key]) {
         fields[key]={type:target.type, filled:true, tracked:true, timestamp:new Date().toISOString()};
         formFields.set(form, fields);
 
-        var val=getSafeFieldValue(target);
         var payload={ form_id:form.id||'unknown', field_name:key, field_type:target.type, field_label:getLabelForField(target) };
         if (typeof val!=='undefined') payload.field_value=val;
         trackEvent('FieldFilled', payload);
+        fields[key].emitted = true;
+        formFields.set(form, fields);
       }
     }, true);
 
@@ -426,12 +403,15 @@
           hasVal = true;
         }
 
+        var val=getSafeFieldValue(el);
+        rememberFieldValue(form, key, val);
+
         if (hasVal && !fields[key]) {
           fields[key]={type:el.type, filled:true, tracked:true, timestamp:new Date().toISOString()};
-          var val=getSafeFieldValue(el);
           var payload={ form_id:form.id||'unknown', field_name:key, field_type:el.type, field_label:getLabelForField(el) };
           if (typeof val!=='undefined') payload.field_value=val;
           trackEvent('FieldFilled', payload);
+          fields[key].emitted = true;
         }
       });
       formFields.set(form, fields);
@@ -453,6 +433,19 @@
           out[key]='false';
         }
       });
+
+      // NOVO: preencher ausentes com último valor rastreado
+      if (includeTrackedValuesOnLead) {
+        var map = formFields.get(form) || {};
+        for (var k in map) {
+          if (!Object.prototype.hasOwnProperty.call(map, k)) continue;
+          if (typeof out[k] === 'undefined' || out[k] === '') {
+            var v = map[k].last_value;
+            if (typeof v !== 'undefined' && v !== '') out[k] = v;
+          }
+        }
+      }
+
       return out;
     }
 
@@ -475,6 +468,10 @@
             if (!includeDisabledOrHidden && (el.disabled || isHidden(el))) return;
             var k=getFieldKey(el); if (k) seen.push(k);
           });
+          // incluir também chaves rastreadas (para comparar corretamente)
+          var mapDbg = formFields.get(form) || {};
+          Object.keys(mapDbg).forEach(function(k){ if (seen.indexOf(k)===-1) seen.push(k); });
+
           var sent = Object.keys(leadData || {});
           var missing = seen.filter(function(k){ return sent.indexOf(k)===-1; });
 
@@ -490,9 +487,10 @@
               includeFileNamesOnLead: includeFileNamesOnLead,
               includeDisabledOrHidden: includeDisabledOrHidden,
               includeUncheckedAsFalse: includeUncheckedAsFalse,
-              maskSensitiveFields: maskSensitiveFields
+              maskSensitiveFields: maskSensitiveFields,
+              includeTrackedValuesOnLead: includeTrackedValuesOnLead
             },
-            version: '1.7.2'
+            version: '1.7.3'
           });
         } catch(err){ warn('FormDebugSummary error:', err.message); }
       }
@@ -559,11 +557,11 @@
     track: trackEvent,
     getVisitorId: getVisitorId,
     getSessionId: getSessionId,
-    version: '1.7.2',
+    version: '1.7.3',
     config: { cookiesEnabled: cookiesEnabled, storageEnabled: storageEnabled }
   };
 
-  log('Tracker inicializado v1.7.2');
+  log('Tracker inicializado v1.7.3');
   log('Company:', config.companyId);
   log('Webhook:', config.webhookUrl);
 
