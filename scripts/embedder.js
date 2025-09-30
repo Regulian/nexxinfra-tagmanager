@@ -4,4 +4,4 @@
     companyId: 'uuid-empresa-teste'
   };
 </script>
-<script src="https://tracking-cdn.railway.app/tracker.js"></script>
+<script src="https://nexxinfra-tagmanager-production.up.railway.app/tracker.js"></script>
