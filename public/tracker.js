@@ -1,6 +1,6 @@
 /**
- * Nexxinfra Tag Manager - Tracker v1.1.0
- * Atualizado com suporte para ambientes sem cookies (sandboxed)
+ * Nexxinfra Tag Manager - Tracker v1.2.0
+ * Atualizado: Usar apenas fetch (sem sendBeacon para evitar CORS)
  */
 (function(window, document) {
   'use strict';
@@ -227,7 +227,7 @@
     return savedUtms ? JSON.parse(savedUtms) : utms;
   }
 
-  // Enviar evento
+  // Enviar evento (APENAS FETCH)
   function trackEvent(eventName, eventData) {
     eventData = eventData || {};
     
@@ -276,49 +276,30 @@
     log('Enviando evento:', eventName);
     log('Payload:', JSON.stringify(payload, null, 2));
 
-    // Enviar via fetch com fallback para sendBeacon
-    var sendViaFetch = function() {
-      fetch(config.webhookUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(payload),
-        keepalive: true
-      }).then(function(response) {
-        if (response.ok) {
-          log('Evento enviado com sucesso:', response.status);
-          return response.json();
-        } else {
-          warn('Erro ao enviar evento:', response.status);
-          throw new Error('HTTP ' + response.status);
-        }
-      }).then(function(data) {
-        log('Resposta do servidor:', data);
-      }).catch(function(err) {
-        warn('Erro ao enviar evento:', err.message);
-      });
-    };
-
-    // Tentar sendBeacon primeiro (mais confiável para eventos de saída)
-    if (navigator.sendBeacon && eventName !== 'PageView') {
-      try {
-        var blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
-        var sent = navigator.sendBeacon(config.webhookUrl, blob);
-        
-        if (sent) {
-          log('Evento enviado via sendBeacon');
-        } else {
-          log('sendBeacon falhou, usando fetch');
-          sendViaFetch();
-        }
-      } catch(e) {
-        warn('sendBeacon error:', e.message);
-        sendViaFetch();
+    // Enviar usando APENAS fetch (sem sendBeacon para evitar problemas CORS)
+    fetch(config.webhookUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload),
+      keepalive: true
+    }).then(function(response) {
+      if (response.ok) {
+        log('Evento enviado com sucesso:', response.status);
+        return response.json().catch(function() {
+          // Caso não seja JSON válido
+          return {success: true};
+        });
+      } else {
+        warn('Erro ao enviar evento:', response.status, response.statusText);
+        throw new Error('HTTP ' + response.status);
       }
-    } else {
-      sendViaFetch();
-    }
+    }).then(function(data) {
+      log('Resposta do servidor:', data);
+    }).catch(function(err) {
+      warn('Erro ao enviar evento:', err.message);
+    });
   }
 
   // PageView automático
@@ -370,7 +351,7 @@
     track: trackEvent,
     getVisitorId: getVisitorId,
     getSessionId: getSessionId,
-    version: '1.1.0',
+    version: '1.2.0',
     config: {
       cookiesEnabled: cookiesEnabled,
       storageEnabled: storageEnabled
@@ -380,6 +361,6 @@
   log('Tracker inicializado');
   log('Company:', config.companyId);
   log('Webhook:', config.webhookUrl);
-  log('Version:', '1.1.0');
+  log('Version:', '1.2.0');
 
 })(window, document);
