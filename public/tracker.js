@@ -1,10 +1,12 @@
 /**
- * Nexxinfra Tag Manager - Tracker v1.7.4
- * Fixes & melhorias vs 1.7.3:
- * - FieldFilled por fallback em BLUR (garante disparo mesmo se o usuário sair do campo antes do debounce)
- * - Flush adicional em visibilitychange (quando a aba é ocultada)
- * - Mantém: Lead dinâmico, flush no submit, suporte [form="..."], alias, máscara/sanitização,
- *   FormSchema, FormDebugSummary (debug) e includeTrackedValuesOnLead (preenche ausentes a partir do que foi rastreado).
+ * Nexxinfra Tag Manager - Tracker v1.7.5
+ *
+ * Novidades vs 1.7.4:
+ * - Robustez do FormStarted: além de 'focus', garante start também no início de 'input', 'change' e 'blur'
+ *   (cobre autofill, selects/mobile e libs que manipulam foco).
+ * - Mantém: FieldFilled por fallback em BLUR, flush adicional em visibilitychange,
+ *   Lead dinâmico, flush no submit, suporte [form="..."], alias, máscara/sanitização,
+ *   FormSchema, FormDebugSummary (debug) e includeTrackedValuesOnLead (preenche ausentes com o que foi rastreado).
  */
 (function (window, document) {
   'use strict';
@@ -275,6 +277,22 @@
       }
       return false;
     }
+
+    // garante que FormStarted seja emitido 1x por form
+    function ensureFormStarted(form, el){
+      if (!form || form.getAttribute('data-tracker-ignore')) return;
+      if (!formsStarted.get(form)) {
+        formsStarted.set(form, true);
+        trackEvent('FormStarted', {
+          form_id: form.id || 'unknown',
+          form_action: form.action || window.location.href,
+          first_field: getFieldKey(el)
+        });
+        formFields.set(form, {});
+        emitFormSchema(form);
+      }
+    }
+
     function rememberFieldValue(form, key, val){
       if (typeof val === 'undefined') return;
       var map = formFields.get(form) || {};
@@ -306,33 +324,26 @@
       });
     }
 
-    // Start
+    // Start (via focus)
     document.addEventListener('focus', function(e){
       var target=e.target; if(!isEligibleElement(target)) return;
       var form=target.closest('form') || (target.form || null);
-      if (form && !form.getAttribute('data-tracker-ignore')) {
-        if (!formsStarted.get(form)) {
-          formsStarted.set(form, true);
-          trackEvent('FormStarted', {
-            form_id: form.id || 'unknown',
-            form_action: form.action || window.location.href,
-            first_field: getFieldKey(target)
-          });
-          formFields.set(form, {});
-          emitFormSchema(form);
-        }
-      }
+      ensureFormStarted(form, target);
     }, true);
 
-    // Debounce input (text-like)
+    // input (text-like)
     document.addEventListener('input', function(e){
       var target=e.target; if(!isEligibleElement(target)) return;
       var tag=(target.tagName||'').toLowerCase();
       var t=(target.type||'').toLowerCase();
-      if (t==='checkbox'||t==='radio'||t==='file'||tag==='select') return; // estes vão no 'change'
 
       var form=target.closest('form') || (target.form || null);
       if (!(form && !form.getAttribute('data-tracker-ignore'))) return;
+
+      // robustez: garante FormStarted mesmo se focus não disparou
+      ensureFormStarted(form, target);
+
+      if (t==='checkbox'||t==='radio'||t==='file'||tag==='select') return; // estes vão no 'change'
 
       var fields=formFields.get(form)||{};
       var key=getFieldKey(target);
@@ -355,7 +366,7 @@
           fields[key].emitted = true;
           formFields.set(form, fields);
         }
-      }, 600); // ligeiramente mais ágil
+      }, 600);
       fieldTimers.set(target, timer);
     }, true);
 
@@ -364,6 +375,9 @@
       var target=e.target; if(!isEligibleElement(target)) return;
       var form=target.closest('form') || (target.form || null);
       if (!(form && !form.getAttribute('data-tracker-ignore'))) return;
+
+      // robustez: garante FormStarted
+      ensureFormStarted(form, target);
 
       var fields=formFields.get(form)||{};
       var key=getFieldKey(target);
@@ -390,16 +404,18 @@
       }
     }, true);
 
-    // NOVO: fallback em BLUR — garante FieldFilled mesmo se o usuário sair do campo antes do debounce
+    // BLUR — fallback garante FieldFilled se usuário sair do campo antes do debounce
     document.addEventListener('blur', function(e){
       var target=e.target; if(!isEligibleElement(target)) return;
       var form=target.closest('form') || (target.form || null);
       if (!(form && !form.getAttribute('data-tracker-ignore'))) return;
 
+      // robustez: garante FormStarted
+      ensureFormStarted(form, target);
+
       var fields=formFields.get(form)||{};
       var key=getFieldKey(target);
 
-      // limpa debounce pendente
       var tmr=fieldTimers.get(target); if(tmr){ clearTimeout(tmr); fieldTimers.delete(target); }
 
       var raw=getFieldPrimitiveValue(target);
@@ -488,6 +504,9 @@
       var form=e.target;
       if (form.getAttribute('data-tracker-ignore')) return;
 
+      // garante start mesmo se nunca houve foco em nenhum campo
+      ensureFormStarted(form, form);
+
       finalizeFormFields(form); // garante FieldFilled de tudo
       formsSubmitted.add(form);
 
@@ -523,7 +542,7 @@
               maskSensitiveFields: maskSensitiveFields,
               includeTrackedValuesOnLead: includeTrackedValuesOnLead
             },
-            version: '1.7.4'
+            version: '1.7.5'
           });
         } catch(err){ warn('FormDebugSummary error:', err.message); }
       }
@@ -557,7 +576,7 @@
       });
     });
 
-    // NOVO: flush ao ocultar a aba (evita perder FieldFilled se o usuário troca de tab logo após digitar)
+    // flush ao ocultar a aba (evita perder FieldFilled ao trocar de tab logo após digitar)
     document.addEventListener('visibilitychange', function(){
       if (document.hidden) {
         document.querySelectorAll('form').forEach(function(form){
@@ -599,11 +618,11 @@
     track: trackEvent,
     getVisitorId: getVisitorId,
     getSessionId: getSessionId,
-    version: '1.7.4',
+    version: '1.7.5',
     config: { cookiesEnabled: cookiesEnabled, storageEnabled: storageEnabled }
   };
 
-  log('Tracker inicializado v1.7.4');
+  log('Tracker inicializado v1.7.5');
   log('Company:', config.companyId);
   log('Webhook:', config.webhookUrl);
 
