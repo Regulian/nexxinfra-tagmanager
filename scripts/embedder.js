@@ -13,4 +13,4 @@
     emitFormDebugSummary: true
   };
 </script>
-<script src="https://nexxinfra-tagmanager-production.up.railway.app/tracker.js?v=1.7.3"></script>
+<script src="https://nexxinfra-tagmanager-production.up.railway.app/tracker.js?v=1.8.0"></script>
