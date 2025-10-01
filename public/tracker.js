@@ -1,7 +1,7 @@
 /**
  * Nexxinfra Tag Manager - Tracker v1.8.0
  *
- * Novidades vs 1.7.5:
+ * Novidades vs 1.8.0:
  * - Modularização da emissão de FieldFilled: função única emitFieldFilled(form, el, reason).
  * - Garantia: TODO FieldFilled inclui field_value.
  * - Novos configs:
