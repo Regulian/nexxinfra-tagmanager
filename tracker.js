@@ -1,9 +1,10 @@
 /**
- * Tagboy Tracker v1.8.2
+ * Tagboy Tracker v1.8.3
  * 
- * Corrigido: Payload agora envia formato correto para Edge Functions
- * - companyId (não company_id)
- * - event: { type, ...data } (não event_name/event_data)
+ * Corrigido: FieldFilled agora captura o valor final completo
+ * - Eventos de blur e change sempre enviam o valor atual
+ * - Debounce só marca como emitted para evitar duplicação
+ * - Garante que o valor final seja capturado ao sair do campo
  */
 (function (window, document) {
   'use strict';
@@ -387,7 +388,11 @@
 
       if (typeof valueForEvent !== 'undefined') rememberFieldValue(form, key, valueForEvent);
 
-      if (hasVal && !(fields[key] && fields[key].emitted)) {
+      // Permitir múltiplos envios para capturar o valor final (especialmente no blur)
+      // Só marca como emitted se for debounce, mas blur sempre envia
+      var shouldEmit = hasVal && (reason === 'blur' || reason === 'change' || !(fields[key] && fields[key].emitted));
+      
+      if (shouldEmit) {
         fields[key]=fields[key]||{type:el.type, filled:true, tracked:true};
         fields[key].timestamp = new Date().toISOString();
         var payload={
@@ -399,7 +404,11 @@
         };
         if (typeof valueForEvent !== 'undefined') payload.field_value = valueForEvent;
         trackEvent('FieldFilled', payload);
-        fields[key].emitted = true;
+        
+        // Só marca como emitted se for debounce (não blur ou change)
+        if (reason === 'debounce') {
+          fields[key].emitted = true;
+        }
         formFields.set(form, fields);
       }
     }
