@@ -1,5 +1,5 @@
 /**
- * Tagboy Tracker v1.8.1
+ * Tagboy Tracker v1.8.2
  * 
  * Corrigido: Payload agora envia formato correto para Edge Functions
  * - companyId (não company_id)
@@ -202,10 +202,29 @@
   }
 
   // ===========================
-  // IDs & UTM
+  // IDs & UTM (com fallback em memória)
   // ===========================
-  function getVisitorId(){ var v=getCookie('_visitor_id')||getStorage('_visitor_id'); if(v) return v; v=generateId('vis'); if(!setCookie('_visitor_id',v,365)) setStorage('_visitor_id',v); return v; }
-  function getSessionId(){ var s=getSessionStorage('_session_id'); if(!s){ s=generateId('sess'); setSessionStorage('_session_id',s);} return s; }
+  var memoryVisitorId = null;
+  var memorySessionId = null;
+  
+  function getVisitorId(){ 
+    var v=getCookie('_visitor_id')||getStorage('_visitor_id')||memoryVisitorId; 
+    if(v) return v; 
+    v=generateId('vis'); 
+    if(!setCookie('_visitor_id',v,365)) setStorage('_visitor_id',v);
+    memoryVisitorId = v;
+    return v; 
+  }
+  
+  function getSessionId(){ 
+    var s=getSessionStorage('_session_id')||memorySessionId; 
+    if(!s){ 
+      s=generateId('sess'); 
+      setSessionStorage('_session_id',s);
+      memorySessionId = s;
+    } 
+    return s; 
+  }
   function getFBP(){ var f=getCookie('_fbp')||getStorage('_fbp'); if(!f){ f='fb.1.'+Date.now()+'.'+Math.random().toString(36).substr(2,9); if(!setCookie('_fbp',f,90)) setStorage('_fbp',f);} return f; }
   function getFBC(){ var f=getCookie('_fbc')||getStorage('_fbc'); var fbclid=getUrlParam('fbclid'); if(fbclid && !f){ f='fb.1.'+Date.now()+'.'+fbclid; if(!setCookie('_fbc',f,90)) setStorage('_fbc',f);} return f; }
   function captureUTMs(){ var u={utm_source:getUrlParam('utm_source'),utm_medium:getUrlParam('utm_medium'),utm_campaign:getUrlParam('utm_campaign'),utm_content:getUrlParam('utm_content'),utm_term:getUrlParam('utm_term')}; if(u.utm_source||u.utm_campaign) setSessionStorage('_utms',JSON.stringify(u)); var s=getSessionStorage('_utms'); return s?JSON.parse(s):u; }
@@ -598,11 +617,11 @@
     track: trackEvent,
     getVisitorId: getVisitorId,
     getSessionId: getSessionId,
-    version: '1.8.1',
+    version: '1.8.2',
     config: { cookiesEnabled: cookiesEnabled, storageEnabled: storageEnabled }
   };
 
-  log('✅ Tracker inicializado v1.8.1');
+  log('✅ Tracker inicializado v1.8.2');
   log('Company:', config.companyId);
   log('Webhook:', config.webhookUrl);
 
