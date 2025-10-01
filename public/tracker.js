@@ -1,16 +1,9 @@
 /**
- * Nexxinfra Tag Manager - Tracker v1.8.0
- *
- * Novidades vs 1.8.0:
- * - Modularização da emissão de FieldFilled: função única emitFieldFilled(form, el, reason).
- * - Garantia: TODO FieldFilled inclui field_value.
- * - Novos configs:
- *    - forceFieldValueOnFieldFilled (default: true)
- *    - fieldFilledMaskSensitive (default: segue maskSensitiveFields)
- *    - fieldFilledMaskReplacement (default: "[masked]")
- * - Mantém: FormStarted robusto (focus + input/change/blur), BLUR fallback,
- *   flush em visibilitychange, Lead dinâmico com preenchimento a partir do rastreado,
- *   FormSchema e FormDebugSummary.
+ * Tagboy Tracker v1.8.1
+ * 
+ * Corrigido: Payload agora envia formato correto para Edge Functions
+ * - companyId (não company_id)
+ * - event: { type, ...data } (não event_name/event_data)
  */
 (function (window, document) {
   'use strict';
@@ -27,28 +20,26 @@
   function warn(){ if (debug) console.warn('[Tracker]', [].slice.call(arguments).join(' ')); }
 
   // Coleta de valores
-  var collectFieldValues = config.collectFieldValues !== false; // default: true
-  var maskSensitiveFields = config.maskSensitiveFields !== false; // default: true
+  var collectFieldValues = config.collectFieldValues !== false;
+  var maskSensitiveFields = config.maskSensitiveFields !== false;
   var maxFieldValueLength = Number(config.maxFieldValueLength || 200);
 
   // LEAD dinâmico
-  var includeAllFieldsOnLead     = config.includeAllFieldsOnLead !== false; // default: true
-  var includeCheckboxRadioOnLead = config.includeCheckboxRadioOnLead !== false; // default: true
-  var includeFileNamesOnLead     = !!config.includeFileNamesOnLead; // default: false
-  var includeDisabledOrHidden    = !!config.includeDisabledOrHidden; // default: false
-  var includeUncheckedAsFalse    = !!config.includeUncheckedAsFalse; // default: false
-
-  // Preencher ausentes no Lead com último valor rastreado
-  var includeTrackedValuesOnLead = config.includeTrackedValuesOnLead !== false; // default: true
+  var includeAllFieldsOnLead = config.includeAllFieldsOnLead !== false;
+  var includeCheckboxRadioOnLead = config.includeCheckboxRadioOnLead !== false;
+  var includeFileNamesOnLead = !!config.includeFileNamesOnLead;
+  var includeDisabledOrHidden = !!config.includeDisabledOrHidden;
+  var includeUncheckedAsFalse = !!config.includeUncheckedAsFalse;
+  var includeTrackedValuesOnLead = config.includeTrackedValuesOnLead !== false;
 
   // Eventos auxiliares
-  var emitFormSchemaOnStart = config.emitFormSchemaOnStart !== false; // default: true
-  var emitFormDebugSummary  = config.emitFormDebugSummary !== false;  // default: true (só em debug)
+  var emitFormSchemaOnStart = config.emitFormSchemaOnStart !== false;
+  var emitFormDebugSummary = config.emitFormDebugSummary !== false;
 
-  // FieldFilled: garantia de valor
-  var forceFieldValueOnFieldFilled = config.forceFieldValueOnFieldFilled !== false; // default: true
+  // FieldFilled
+  var forceFieldValueOnFieldFilled = config.forceFieldValueOnFieldFilled !== false;
   var fieldFilledMaskSensitive = (typeof config.fieldFilledMaskSensitive === 'boolean')
-    ? config.fieldFilledMaskSensitive : maskSensitiveFields; // por padrão segue maskSensitiveFields
+    ? config.fieldFilledMaskSensitive : maskSensitiveFields;
   var fieldFilledMaskReplacement = config.fieldFilledMaskReplacement || '[masked]';
 
   // Padrões sensíveis
@@ -124,7 +115,6 @@
     return isSensitiveByName(field.name) || isSensitiveByName(field.id);
   }
 
-  // coleta genérica (Lead e outros)
   function shouldCollectValue(field){
     if (!collectFieldValues) return false;
     if (field.getAttribute('data-tracker-no-value')==='true') return false;
@@ -194,7 +184,6 @@
     return el.value || '';
   }
 
-  // valor "sempre" para FieldFilled
   function getFieldValueForFieldFilled(el){
     var raw = getFieldPrimitiveValue(el);
     var out;
@@ -206,7 +195,6 @@
       if (!out && includeUncheckedAsFalse && ((el.type||'').toLowerCase()==='checkbox' || (el.type||'').toLowerCase()==='radio')) out = 'false';
     }
 
-    // máscara opcional específica do FieldFilled
     if (fieldFilledMaskSensitive && isFieldSensitive(el) && !isInAllowlist(el)) {
       return fieldFilledMaskReplacement;
     }
@@ -223,42 +211,64 @@
   function captureUTMs(){ var u={utm_source:getUrlParam('utm_source'),utm_medium:getUrlParam('utm_medium'),utm_campaign:getUrlParam('utm_campaign'),utm_content:getUrlParam('utm_content'),utm_term:getUrlParam('utm_term')}; if(u.utm_source||u.utm_campaign) setSessionStorage('_utms',JSON.stringify(u)); var s=getSessionStorage('_utms'); return s?JSON.parse(s):u; }
 
   // ===========================
-  // SEND EVENT
+  // SEND EVENT - FORMATO CORRETO
   // ===========================
   function trackEvent(eventName, eventData){
     eventData = eventData || {};
     var utms = captureUTMs();
-    var payload = {
-      company_id: config.companyId,
-      event_name: eventName,
-      event_data: {
-        page_url: window.location.href,
-        page_title: document.title,
-        referrer: document.referrer,
-        visitor_id: getVisitorId(),
-        session_id: getSessionId(),
-        fbp: getFBP(),
-        fbc: getFBC(),
-        gclid: getUrlParam('gclid'),
-        utm_source: utms.utm_source,
-        utm_medium: utms.utm_medium,
-        utm_campaign: utms.utm_campaign,
-        utm_content: utms.utm_content,
-        utm_term: utms.utm_term,
-        user_agent: navigator.userAgent,
-        screen_resolution: screen.width+'x'+screen.height,
-        language: navigator.language,
-        timestamp: new Date().toISOString()
-      }
+    
+    // Construir event com todos os dados
+    var event = {
+      type: eventName,
+      page_url: window.location.href,
+      page_title: document.title,
+      referrer: document.referrer,
+      visitor_id: getVisitorId(),
+      session_id: getSessionId(),
+      fbp: getFBP(),
+      fbc: getFBC(),
+      gclid: getUrlParam('gclid'),
+      utm_source: utms.utm_source,
+      utm_medium: utms.utm_medium,
+      utm_campaign: utms.utm_campaign,
+      utm_content: utms.utm_content,
+      utm_term: utms.utm_term,
+      user_agent: navigator.userAgent,
+      screen_resolution: screen.width+'x'+screen.height,
+      language: navigator.language,
+      timestamp: new Date().toISOString()
     };
-    for (var k in eventData) if (Object.prototype.hasOwnProperty.call(eventData,k)) payload.event_data[k]=eventData[k];
+    
+    // Adicionar dados customizados do evento
+    for (var k in eventData) {
+      if (Object.prototype.hasOwnProperty.call(eventData, k)) {
+        event[k] = eventData[k];
+      }
+    }
+
+    // Payload no formato correto para Edge Functions
+    var payload = {
+      companyId: config.companyId,
+      event: event,
+      dedupeKey: generateId('evt')
+    };
 
     fetch(config.webhookUrl, {
-      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload), keepalive:true
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      keepalive: true
     }).then(function(r){
-      if(!r.ok){ warn('Erro ao enviar evento:', r.status, r.statusText); throw new Error('HTTP '+r.status); }
+      if (!r.ok) {
+        warn('Erro ao enviar evento:', r.status, r.statusText);
+        throw new Error('HTTP '+r.status);
+      }
       return r.json().catch(function(){ return {success:true}; });
-    }).then(function(d){ log('Resp:', d); }).catch(function(err){ warn('Send fail:', err.message); });
+    }).then(function(d){
+      log('✅ Evento enviado:', eventName, d);
+    }).catch(function(err){
+      warn('❌ Falha ao enviar:', err.message);
+    });
   }
 
   // ===========================
@@ -275,9 +285,9 @@
   // ===========================
   if (config.autoFormTracking !== false) {
     var formsStarted = new WeakMap();
-    var formFields  = new WeakMap();  // por form: { key -> {type, filled, tracked, emitted?, last_value?, timestamp} }
+    var formFields = new WeakMap();
     var formsSubmitted = new WeakSet();
-    var fieldTimers = new WeakMap();  // debounce por elemento
+    var fieldTimers = new WeakMap();
 
     function isEligibleElement(el){
       if (!el) return false;
@@ -295,7 +305,6 @@
       return false;
     }
 
-    // garante que FormStarted seja emitido 1x por form
     function ensureFormStarted(form, el){
       if (!form || form.getAttribute('data-tracker-ignore')) return;
       if (!formsStarted.get(form)) {
@@ -341,27 +350,22 @@
       });
     }
 
-    // ---------- EMISSOR ÚNICO DE FIELDFILLED ----------
     function emitFieldFilled(form, el, reason){
       if (!(form && !form.getAttribute('data-tracker-ignore'))) return;
 
       var fields=formFields.get(form)||{};
       var key=getFieldKey(el);
 
-      // finalize debounce para este elemento
       var tmr=fieldTimers.get(el); if(tmr){ clearTimeout(tmr); fieldTimers.delete(el); }
 
-      // calcular "tem valor"
       var raw=getFieldPrimitiveValue(el);
       var hasVal = Array.isArray(raw) ? raw.length>0 : !!String(raw).trim();
       if (!hasVal && includeUncheckedAsFalse && ((el.type||'').toLowerCase()==='checkbox' || (el.type||'').toLowerCase()==='radio')) {
         hasVal = true;
       }
 
-      // valor para FieldFilled (sempre presente, com máscara opcional)
       var valueForEvent = forceFieldValueOnFieldFilled ? getFieldValueForFieldFilled(el) : undefined;
 
-      // registrar último valor (para Lead)
       if (typeof valueForEvent !== 'undefined') rememberFieldValue(form, key, valueForEvent);
 
       if (hasVal && !(fields[key] && fields[key].emitted)) {
@@ -380,16 +384,13 @@
         formFields.set(form, fields);
       }
     }
-    // -----------------------------------------------
 
-    // Start (via focus)
     document.addEventListener('focus', function(e){
       var target=e.target; if(!isEligibleElement(target)) return;
       var form=target.closest('form') || (target.form || null);
       ensureFormStarted(form, target);
     }, true);
 
-    // input (text-like) com debounce
     document.addEventListener('input', function(e){
       var target=e.target; if(!isEligibleElement(target)) return;
       var tag=(target.tagName||'').toLowerCase();
@@ -398,10 +399,9 @@
       var form=target.closest('form') || (target.form || null);
       if (!(form && !form.getAttribute('data-tracker-ignore'))) return;
 
-      // robustez: garante FormStarted
       ensureFormStarted(form, target);
 
-      if (t==='checkbox'||t==='radio'||t==='file'||tag==='select') return; // estes vão no 'change'
+      if (t==='checkbox'||t==='radio'||t==='file'||tag==='select') return;
 
       var prev=fieldTimers.get(target); if(prev) clearTimeout(prev);
       var timer=setTimeout(function(){
@@ -410,7 +410,6 @@
       fieldTimers.set(target, timer);
     }, true);
 
-    // change (checkbox/radio/select/file/dates)
     document.addEventListener('change', function(e){
       var target=e.target; if(!isEligibleElement(target)) return;
       var form=target.closest('form') || (target.form || null);
@@ -420,7 +419,6 @@
       emitFieldFilled(form, target, 'change');
     }, true);
 
-    // BLUR — fallback
     document.addEventListener('blur', function(e){
       var target=e.target; if(!isEligibleElement(target)) return;
       var form=target.closest('form') || (target.form || null);
@@ -430,7 +428,6 @@
       emitFieldFilled(form, target, 'blur');
     }, true);
 
-    // Flush pendentes e garantir FieldFilled antes do Lead
     function finalizeFormFields(form){
       getAssociatedElements(form).forEach(function(el){
         if (!isEligibleElement(el)) return;
@@ -438,9 +435,7 @@
       });
     }
 
-    // Coleta do Lead (TODOS os campos)
     function getSafeFieldValue(el){
-      // versão genérica (respeita configs de coleta/mascara) — usada para Lead
       if (!shouldCollectValue(el)) return undefined;
       var raw = getFieldPrimitiveValue(el);
       if (Array.isArray(raw)) {
@@ -473,7 +468,6 @@
         }
       });
 
-      // Preencher ausentes com último valor rastreado
       if (includeTrackedValuesOnLead) {
         var map = formFields.get(form) || {};
         for (var k in map) {
@@ -487,20 +481,16 @@
       return out;
     }
 
-    // submit
     document.addEventListener('submit', function(e){
       var form=e.target;
       if (form.getAttribute('data-tracker-ignore')) return;
 
-      // garante start mesmo se nunca houve foco
       ensureFormStarted(form, form);
-
-      finalizeFormFields(form); // garante FieldFilled de tudo
+      finalizeFormFields(form);
       formsSubmitted.add(form);
 
       var leadData = includeAllFieldsOnLead ? collectLeadData(form) : {};
 
-      // (debug) comparar vistos vs enviados
       if (debug && emitFormDebugSummary) {
         try {
           var seen = [];
@@ -532,7 +522,7 @@
               forceFieldValueOnFieldFilled: forceFieldValueOnFieldFilled,
               fieldFilledMaskSensitive: fieldFilledMaskSensitive
             },
-            version: '1.8.0'
+            version: '1.8.1'
           });
         } catch(err){ warn('FormDebugSummary error:', err.message); }
       }
@@ -544,14 +534,12 @@
       });
     }, true);
 
-    // abandono
     window.addEventListener('beforeunload', function(){
       document.querySelectorAll('form').forEach(function(form){
         if (form.getAttribute('data-tracker-ignore')) return;
         if (formsSubmitted.has(form)) return;
         var fieldsMap=formFields.get(form);
         if (fieldsMap && Object.keys(fieldsMap).length>0) {
-          // flush final de todos (garante FieldFilled com valor)
           finalizeFormFields(form);
 
           var filledFields=Object.keys(fieldsMap);
@@ -569,7 +557,6 @@
       });
     });
 
-    // flush ao ocultar a aba
     document.addEventListener('visibilitychange', function(){
       if (document.hidden) {
         document.querySelectorAll('form').forEach(function(form){
@@ -611,11 +598,11 @@
     track: trackEvent,
     getVisitorId: getVisitorId,
     getSessionId: getSessionId,
-    version: '1.8.0',
+    version: '1.8.1',
     config: { cookiesEnabled: cookiesEnabled, storageEnabled: storageEnabled }
   };
 
-  log('Tracker inicializado v1.8.0');
+  log('✅ Tracker inicializado v1.8.1');
   log('Company:', config.companyId);
   log('Webhook:', config.webhookUrl);
 
