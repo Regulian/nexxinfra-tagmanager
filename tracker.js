@@ -1,10 +1,11 @@
 /**
- * Tagboy Tracker v1.8.3
+ * Tagboy Tracker v1.8.4
  * 
- * Corrigido: FieldFilled agora captura o valor final completo
- * - Eventos de blur e change sempre enviam o valor atual
- * - Debounce só marca como emitted para evitar duplicação
- * - Garante que o valor final seja capturado ao sair do campo
+ * CORREÇÕES Meta CAPI:
+ * - getFBP() agora apenas lê cookies reais (não gera fake)
+ * - getFBC() mantém lógica de criação apenas com fbclid
+ * - Logs de debug para fbp/fbc
+ * - Payload inclui fbp e fbc em todos os eventos
  */
 (function (window, document) {
   'use strict';
@@ -203,7 +204,7 @@
   }
 
   // ===========================
-  // IDs & UTM (com fallback em memória)
+  // IDs & UTM (CORRIGIDO - Meta CAPI)
   // ===========================
   var memoryVisitorId = null;
   var memorySessionId = null;
@@ -226,9 +227,38 @@
     } 
     return s; 
   }
-  function getFBP(){ var f=getCookie('_fbp')||getStorage('_fbp'); if(!f){ f='fb.1.'+Date.now()+'.'+Math.random().toString(36).substr(2,9); if(!setCookie('_fbp',f,90)) setStorage('_fbp',f);} return f; }
-  function getFBC(){ var f=getCookie('_fbc')||getStorage('_fbc'); var fbclid=getUrlParam('fbclid'); if(fbclid && !f){ f='fb.1.'+Date.now()+'.'+fbclid; if(!setCookie('_fbc',f,90)) setStorage('_fbc',f);} return f; }
-  function captureUTMs(){ var u={utm_source:getUrlParam('utm_source'),utm_medium:getUrlParam('utm_medium'),utm_campaign:getUrlParam('utm_campaign'),utm_content:getUrlParam('utm_content'),utm_term:getUrlParam('utm_term')}; if(u.utm_source||u.utm_campaign) setSessionStorage('_utms',JSON.stringify(u)); var s=getSessionStorage('_utms'); return s?JSON.parse(s):u; }
+  
+  // ✅ CORRIGIDO: Apenas lê cookies reais do Pixel Meta
+  function getFBP(){ 
+    return getCookie('_fbp') || getStorage('_fbp') || null;
+  }
+  
+  // ✅ CORRIGIDO: Cria _fbc apenas se fbclid presente
+  function getFBC(){ 
+    var f = getCookie('_fbc') || getStorage('_fbc'); 
+    var fbclid = getUrlParam('fbclid'); 
+    
+    // Se fbclid presente e sem cookie, criar
+    if (fbclid && !f) { 
+      f = 'fb.1.' + Date.now() + '.' + fbclid; 
+      if (!setCookie('_fbc', f, 90)) setStorage('_fbc', f);
+    } 
+    
+    return f || null;
+  }
+  
+  function captureUTMs(){ 
+    var u={
+      utm_source:getUrlParam('utm_source'),
+      utm_medium:getUrlParam('utm_medium'),
+      utm_campaign:getUrlParam('utm_campaign'),
+      utm_content:getUrlParam('utm_content'),
+      utm_term:getUrlParam('utm_term')
+    }; 
+    if(u.utm_source||u.utm_campaign) setSessionStorage('_utms',JSON.stringify(u)); 
+    var s=getSessionStorage('_utms'); 
+    return s?JSON.parse(s):u; 
+  }
 
   // ===========================
   // SEND EVENT - FORMATO CORRETO
@@ -236,6 +266,13 @@
   function trackEvent(eventName, eventData){
     eventData = eventData || {};
     var utms = captureUTMs();
+    
+    // ✅ ADICIONAR: Log de debug para Meta cookies
+    if (debug) {
+      var fbp = getFBP();
+      var fbc = getFBC();
+      log('🔍 Meta Cookies:', { fbp: fbp, fbc: fbc });
+    }
     
     // Construir event com todos os dados
     var event = {
@@ -245,8 +282,8 @@
       referrer: document.referrer,
       visitor_id: getVisitorId(),
       session_id: getSessionId(),
-      fbp: getFBP(),
-      fbc: getFBC(),
+      fbp: getFBP(), // ✅ Incluir FBP
+      fbc: getFBC(), // ✅ Incluir FBC
       gclid: getUrlParam('gclid'),
       utm_source: utms.utm_source,
       utm_medium: utms.utm_medium,
@@ -301,7 +338,7 @@
   }
 
   // ===========================
-  // FORMS
+  // FORMS (código sem alterações)
   // ===========================
   if (config.autoFormTracking !== false) {
     var formsStarted = new WeakMap();
@@ -388,8 +425,6 @@
 
       if (typeof valueForEvent !== 'undefined') rememberFieldValue(form, key, valueForEvent);
 
-      // Permitir múltiplos envios para capturar o valor final (especialmente no blur)
-      // Só marca como emitted se for debounce, mas blur sempre envia
       var shouldEmit = hasVal && (reason === 'blur' || reason === 'change' || !(fields[key] && fields[key].emitted));
       
       if (shouldEmit) {
@@ -405,7 +440,6 @@
         if (typeof valueForEvent !== 'undefined') payload.field_value = valueForEvent;
         trackEvent('FieldFilled', payload);
         
-        // Só marca como emitted se for debounce (não blur ou change)
         if (reason === 'debounce') {
           fields[key].emitted = true;
         }
@@ -550,7 +584,7 @@
               forceFieldValueOnFieldFilled: forceFieldValueOnFieldFilled,
               fieldFilledMaskSensitive: fieldFilledMaskSensitive
             },
-            version: '1.8.1'
+            version: '1.8.4'
           });
         } catch(err){ warn('FormDebugSummary error:', err.message); }
       }
@@ -626,11 +660,11 @@
     track: trackEvent,
     getVisitorId: getVisitorId,
     getSessionId: getSessionId,
-    version: '1.8.2',
+    version: '1.8.4',
     config: { cookiesEnabled: cookiesEnabled, storageEnabled: storageEnabled }
   };
 
-  log('✅ Tracker inicializado v1.8.2');
+  log('✅ Tracker inicializado v1.8.4');
   log('Company:', config.companyId);
   log('Webhook:', config.webhookUrl);
 
